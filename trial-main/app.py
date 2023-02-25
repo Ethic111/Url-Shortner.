@@ -1,7 +1,12 @@
 import sqlite3
-from hashids import Hashids
 from flask import Flask, render_template, request, flash, redirect, url_for
+import random  
+import string
 # import validators
+
+# CONSTANTS
+RANDOM_STRING_DEFAULT_LENGTH = 4
+
 
 app = Flask(__name__)
 
@@ -15,58 +20,65 @@ def get_db_connection():
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'this should be a secret random string'
 
-hashids = Hashids(min_length=4, salt=app.config['SECRET_KEY'])
+def save_url(fullUrl, shortUrl):
+    conn = get_db_connection()
+    url_data = conn.execute('INSERT INTO urls (original_url, shorten_url) VALUES (?, ?)',
+                                    (fullUrl, shortUrl))
+    conn.commit()
+    conn.close()
+    return url_data
 
+def unique_url(short_url):
+    conn = get_db_connection()
+    db_url = conn.execute('SELECT * FROM urls WHERE shorten_url = (?)', (short_url,)).fetchone()
+    return db_url == None
+
+def get_random_string(length = RANDOM_STRING_DEFAULT_LENGTH):  
+    letters = string.ascii_lowercase
+    result = ''.join((random.choice(letters)) for x in range(length))  
+    return result
 
 @app.route('/', methods=('GET', 'POST'))
 def index():
-    conn = get_db_connection()
-
     if request.method == 'POST':
         url = request.form['url']
-        custom_id = request.form['custom_id']                  
+        custom_short_url = request.form['custom_id']                  
         # valid= validators.url(url)
         
         if not url:
             flash('The URL is required!')
             return redirect(url_for('index'))
         # elif valid != True:
-        #     flash("Invalid url")    
+            # flash("Invalid url")    
         else:
-            url_data = conn.execute('INSERT INTO urls (original_url) VALUES (?)',
-                                    (url,))
-            conn.commit()
-            conn.close()
-
-            url_id = url_data.lastrowid
+            if not custom_short_url:
+                custom_short_url = get_random_string()
+                while not unique_url(custom_short_url):
+                    custom_short_url = get_random_string()
+            elif not unique_url(custom_short_url):
+                flash('The provided shorten url already exist for some other original url.')
+                return redirect(url_for('index'))
 
             
+            save_url(url, custom_short_url)
 
-            hashid = hashids.encode(url_id)
-                
-            short_url = request.host_url + hashid
+            short_url = request.host_url + custom_short_url
 
             return render_template('index.html', short_url=short_url)
             
     return render_template('index.html')
 
-
-
-@app.route('/<id>')
-def url_redirect(id):
+@app.route('/<shorten_url>')
+def url_redirect(shorten_url):
     conn = get_db_connection()
-
-    original_id = hashids.decode(id)
-    if original_id:
-        original_id = original_id[0]
-        url_data = conn.execute('SELECT original_url, clicks FROM urls'
-                                ' WHERE id = (?)', (original_id,)
-                                ).fetchone()
+    if shorten_url:
+        url_data = conn.execute('SELECT * FROM urls WHERE shorten_url = (?)', (shorten_url,)).fetchone()
+        # In python the select query expects that we return tuple which has one or more values and so we are passing ','
         original_url = url_data['original_url']
         clicks = url_data['clicks']
 
-        conn.execute('UPDATE urls SET clicks = ? WHERE id = ?',
-                     (clicks+1, original_id))
+        conn.execute('UPDATE urls SET clicks = ? WHERE shorten_url = ?',
+                     (clicks+1, shorten_url))
 
         conn.commit()
         conn.close()
@@ -80,14 +92,14 @@ def url_redirect(id):
 @app.route('/stats')
 def stats():
     conn = get_db_connection()
-    db_urls = conn.execute('SELECT id, created, original_url, clicks FROM urls' 
+    db_urls = conn.execute('SELECT id, created, original_url, shorten_url, clicks FROM urls' 
                            ).fetchall()
     conn.close()
 
     urls = []
     for url in db_urls:
         url = dict(url)
-        url['short_url'] = request.host_url + hashids.encode(url['id'])
+        url['shorten_url'] = request.host_url + url['shorten_url']
         urls.append(url)
 
     return render_template('stats.html', urls=urls)
